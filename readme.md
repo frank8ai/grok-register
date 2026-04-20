@@ -1,13 +1,15 @@
 # Grok 账号批量注册工具
 
-基于 [DrissionPage](https://github.com/g1879/DrissionPage) 的 Grok (x.ai) 账号自动注册脚本，使用 [DuckMail](https://duckmail.sbs) 临时邮箱接收验证码，通过 Chrome 扩展修复 CDP `MouseEvent.screenX/screenY` 缺陷绕过 Cloudflare Turnstile。
+基于 [DrissionPage](https://github.com/g1879/DrissionPage) 的 Grok (x.ai) 账号自动注册脚本，支持 CloudflareTemp Unified Pool 或 [DuckMail](https://duckmail.sbs) 临时邮箱接收验证码，通过 Chrome 扩展修复 CDP `MouseEvent.screenX/screenY` 缺陷绕过 Cloudflare Turnstile。
 
 注册完成后自动推送 SSO token 到 [grok2api](https://github.com/chenyme/grok2api) 号池。
 
 ## 特性
 
+- CloudflareTemp Unified Pool 临时邮箱（优先随机子域名池）
 - DuckMail 临时邮箱（`curl_cffi` TLS 指纹伪装）
 - Cloudflare Turnstile 自动绕过（Chrome 扩展 patch `MouseEvent.screenX/screenY`）
+- 注册资料随机化（随机名字、姓氏和密码）
 - 无头服务器支持（Xvfb 虚拟显示器，自动检测 Linux 环境）
 - 中英文界面自动适配
 - 自动推送 SSO token 到 grok2api（支持 append 合并模式）
@@ -18,7 +20,7 @@
 
 - Python 3.10+
 - Chromium 或 Chrome 浏览器
-- [DuckMail](https://duckmail.sbs) 账号（用于创建临时邮箱）
+- CloudflareTemp Unified Pool 实例，或 [DuckMail](https://duckmail.sbs) 账号（用于创建临时邮箱）
 - 可选：[grok2api](https://github.com/chenyme/grok2api) 实例（用于自动导入 SSO token）
 
 ---
@@ -51,6 +53,10 @@ cp config.example.json config.json
 ```json
 {
     "run": { "count": 10 },
+    "email_provider": "cloudflare_temp_unified_pool",
+    "cloudflare_temp_api_base": "https://temp-email-api.bitpowerhub.com",
+    "cloudflare_temp_domain": "finchaintalk.com",
+    "cloudflare_temp_prefer_random_subdomain": true,
     "duckmail_api_base": "https://api.duckmail.sbs",
     "duckmail_bearer": "<your_duckmail_bearer_token>",
     "proxy": "",
@@ -68,6 +74,10 @@ cp config.example.json config.json
 | 字段 | 类型 | 说明 |
 |------|------|------|
 | `run.count` | int | 注册轮数，`0` 为无限循环，可通过 `--count` 覆盖 |
+| `email_provider` | string | 邮箱服务，`cloudflare_temp_unified_pool` 或 `duckmail` |
+| `cloudflare_temp_api_base` | string | CloudflareTemp Worker API 地址 |
+| `cloudflare_temp_domain` | string | CloudflareTemp 优先根域名 |
+| `cloudflare_temp_prefer_random_subdomain` | bool | `true` 时优先从 Worker 返回的随机子域名池里选 |
 | `duckmail_api_base` | string | DuckMail API 地址，默认 `https://api.duckmail.sbs` |
 | `duckmail_bearer` | string | DuckMail Bearer Token（[获取方式](#获取-duckmail-bearer-token)） |
 | `proxy` | string | DuckMail API 请求代理（可选） |
@@ -110,6 +120,8 @@ python DrissionPage_example.py --count 0
 ```
 sso/
   sso_<timestamp>.txt     ← 每行一个 SSO token
+credentials/
+  credentials_<timestamp>.txt  ← 每行一条账号信息：邮箱,密码,名字,姓氏
 logs/
   run_<timestamp>.log     ← 每轮注册的邮箱、密码和结果
 ```
@@ -122,7 +134,7 @@ logs/
 
 ```
 ├── DrissionPage_example.py     # 主脚本
-├── email_register.py           # DuckMail 临时邮箱封装
+├── email_register.py           # 邮箱服务封装（CloudflareTemp / DuckMail）
 ├── config.json                 # 配置文件（不入库）
 ├── config.example.json         # 配置模板
 ├── requirements.txt            # Python 依赖
@@ -130,7 +142,24 @@ logs/
 │   ├── manifest.json
 │   └── script.js
 ├── sso/                        # SSO token 输出（自动创建）
+├── credentials/                # 邮箱/密码/姓名输出（自动创建）
 └── logs/                       # 运行日志（自动创建）
+```
+
+---
+
+## 账号信息格式
+
+`credentials_<timestamp>.txt` 每行格式如下：
+
+```text
+email,password,first_name,last_name
+```
+
+示例：
+
+```text
+tmpabcd1234@story.finchaintalk.com,Ncf1f2cae!a7#wSw5MA15,Ayla,Shaw
 ```
 
 ---

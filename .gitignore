@@ -2,6 +2,7 @@ __pycache__/
 *.pyc
 logs/
 sso/
+credentials/
 chrome_data/
 config.json
 node_modules/

@@ -7,6 +7,7 @@ import datetime
 import logging
 import time
 import os
+import random
 import secrets
 import sys
 
@@ -136,6 +137,8 @@ SIGNUP_URL = "https://accounts.x.ai/sign-up?redirect=grok-com"
 _sso_dir = os.path.join(os.path.dirname(__file__), "sso")
 _sso_ts = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
 DEFAULT_SSO_FILE = os.path.join(_sso_dir, f"sso_{_sso_ts}.txt")
+_credential_dir = os.path.join(os.path.dirname(__file__), "credentials")
+DEFAULT_CREDENTIAL_FILE = os.path.join(_credential_dir, f"credentials_{_sso_ts}.txt")
 
 
 def start_browser():
@@ -227,6 +230,16 @@ return !!(givenInput && familyInput && passwordInput);
         ))
     except Exception:
         return False
+
+
+def wait_for_profile_form(timeout=20):
+    # 验证码提交后页面可能还在跳转，必须等最终注册表单真正出现。
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        if has_profile_form():
+            return True
+        time.sleep(0.5)
+    return False
 
 
 def click_email_signup_button(timeout=10):
@@ -601,17 +614,20 @@ return 'clicked';
 
             if clicked == 'clicked':
                 print(f"[*] 已填写验证码并点击确认邮箱: {code}")
-                time.sleep(2)
-                refresh_active_page()
-                if has_profile_form():
+                if wait_for_profile_form(timeout=20):
                     print("[*] 验证码确认完成，最终注册页已就绪。")
-                return code
+                    return code
+                print("[Debug] 验证码已提交，最终注册页尚未出现，继续等待。")
+                continue
 
             if clicked == 'no-button':
                 current_url = page.url
                 if 'sign-up' in current_url or 'signup' in current_url:
-                    print(f"[*] 已填写验证码，页面已自动跳转到下一步: {current_url}")
-                    return code
+                    if wait_for_profile_form(timeout=20):
+                        print(f"[*] 已填写验证码，页面已自动跳转到下一步: {current_url}")
+                        return code
+                    print("[Debug] 验证码已填写但未找到确认按钮，继续等待最终注册页。")
+                    continue
 
             if clicked == 'disconnected':
                 time.sleep(1)
@@ -694,10 +710,21 @@ Object.defineProperty(MouseEvent.prototype, 'screenY', { value: screenY });
     raise Exception("failed to solve turnstile")
 
 
+FIRST_NAME_POOL = [
+    "Neo", "Evan", "Milo", "Luca", "Owen", "Levi", "Noah", "Iris", "Nora", "Maya",
+    "Lena", "Ayla", "Zoe", "Aria", "Mina", "Theo", "Ezra", "Jude", "Liam", "Lina",
+]
+
+LAST_NAME_POOL = [
+    "Lin", "Shaw", "Stone", "Reed", "Cole", "Hart", "Nash", "Blake", "Quinn", "Vale",
+    "Frost", "Lane", "Hayes", "Wren", "Cruz", "Park", "Moore", "West", "Wade", "King",
+]
+
+
 def build_profile():
     # 生成一组可重复使用的注册资料，密码至少包含大小写、数字和特殊字符。
-    given_name = "Neo"
-    family_name = "Lin"
+    given_name = random.choice(FIRST_NAME_POOL)
+    family_name = random.choice(LAST_NAME_POOL)
     password = "N" + secrets.token_hex(4) + "!a7#" + secrets.token_urlsafe(6)
     return given_name, family_name, password
 
@@ -1009,7 +1036,7 @@ return matches.slice(0, 30);
     raise Exception("登录后未提取到可见数字文本")
 
 
-def wait_for_sso_cookie(timeout=30):
+def wait_for_sso_cookie(timeout=90):
     # 必须在注册完成后再取 sso，优先抓取精确的 sso cookie。
     deadline = time.time() + timeout
     last_seen_names = set()
@@ -1058,6 +1085,21 @@ def append_sso_to_txt(sso_value, output_path=DEFAULT_SSO_FILE):
         file.write(normalized + "\n")
 
     print(f"[*] 已追加写入 sso 到文件: {output_path}")
+
+
+def append_credentials_to_txt(result, output_path=DEFAULT_CREDENTIAL_FILE):
+    # 单独保存成功账号的邮箱、密码和姓名，便于后续复用。
+    os.makedirs(os.path.dirname(output_path), exist_ok=True)
+    line = ",".join([
+        str(result.get("email", "")).strip(),
+        str(result.get("password", "")).strip(),
+        str(result.get("given_name", "")).strip(),
+        str(result.get("family_name", "")).strip(),
+    ])
+    with open(output_path, "a", encoding="utf-8") as file:
+        file.write(line + "\n")
+
+    print(f"[*] 已追加写入账号信息到文件: {output_path}")
 
 
 def push_sso_to_api(new_tokens: list):
@@ -1156,6 +1198,8 @@ def run_single_registration(output_path=DEFAULT_SSO_FILE, extract_numbers=False)
         "sso": sso_value,
         **profile,
     }
+
+    append_credentials_to_txt(result)
 
     if run_logger:
         run_logger.info(

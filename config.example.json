@@ -2,6 +2,10 @@
     "run": {
         "count": 10
     },
+    "email_provider": "cloudflare_temp_unified_pool",
+    "cloudflare_temp_api_base": "https://temp-email-api.bitpowerhub.com",
+    "cloudflare_temp_domain": "finchaintalk.com",
+    "cloudflare_temp_prefer_random_subdomain": true,
     "duckmail_api_base": "https://api.duckmail.sbs",
     "duckmail_bearer": "<your_duckmail_bearer_token>",
     "proxy": "",
