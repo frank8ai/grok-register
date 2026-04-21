@@ -6,7 +6,7 @@
 
 ## 特性
 
-- CloudflareTemp Unified Pool 临时邮箱（优先随机子域名池）
+- CloudflareTemp Unified Pool 临时邮箱（admin 接口随机四级子域名池）
 - DuckMail 临时邮箱（`curl_cffi` TLS 指纹伪装）
 - Cloudflare Turnstile 自动绕过（Chrome 扩展 patch `MouseEvent.screenX/screenY`）
 - 注册资料随机化（随机名字、姓氏和密码）
@@ -55,8 +55,33 @@ cp config.example.json config.json
     "run": { "count": 10 },
     "email_provider": "cloudflare_temp_unified_pool",
     "cloudflare_temp_api_base": "https://temp-email-api.bitpowerhub.com",
-    "cloudflare_temp_domain": "finchaintalk.com",
-    "cloudflare_temp_prefer_random_subdomain": true,
+    "cloudflare_temp_admin_password": "<your_admin_password>",
+    "cloudflare_temp_custom_auth": "<your_custom_auth>",
+    "cloudflare_temp_domains": [
+        "alpha.yzw.io",
+        "support.yzw.io",
+        "status.yzw.io",
+        "beta.bitpowerhub.com",
+        "assets.tokenflowpay.com",
+        "assets.bitpowerhub.com",
+        "assets.finchaintalk.com",
+        "alpha.tokenflowpay.com",
+        "docs.finchaintalk.com",
+        "alpha.bitflow.cc.cd",
+        "alpha.bitflow.ccwu.cc",
+        "alpha.bitfusionpay.com",
+        "alpha.flowpay.cc.cd",
+        "alpha.leon08.cc.cd",
+        "alpha.relayon.cc.cd",
+        "beta.bitflow.cc.cd",
+        "media.bitflow.ccwu.cc",
+        "files.bitfusionpay.com",
+        "news.flowpay.cc.cd",
+        "help.leon08.cc.cd",
+        "support.relayon.cc.cd"
+    ],
+    "cloudflare_temp_enable_random_subdomain": true,
+    "cloudflare_temp_enable_prefix": false,
     "duckmail_api_base": "https://api.duckmail.sbs",
     "duckmail_bearer": "<your_duckmail_bearer_token>",
     "proxy": "",
@@ -76,8 +101,11 @@ cp config.example.json config.json
 | `run.count` | int | 注册轮数，`0` 为无限循环，可通过 `--count` 覆盖 |
 | `email_provider` | string | 邮箱服务，`cloudflare_temp_unified_pool` 或 `duckmail` |
 | `cloudflare_temp_api_base` | string | CloudflareTemp Worker API 地址 |
-| `cloudflare_temp_domain` | string | CloudflareTemp 优先根域名 |
-| `cloudflare_temp_prefer_random_subdomain` | bool | `true` 时优先从 Worker 返回的随机子域名池里选 |
+| `cloudflare_temp_admin_password` | string | CloudflareTemp admin 密码，用于 `/admin/new_address` |
+| `cloudflare_temp_custom_auth` | string | CloudflareTemp custom auth，通常与 admin 密码一致 |
+| `cloudflare_temp_domains` | list | 随机四级子域名的基础域名池 |
+| `cloudflare_temp_enable_random_subdomain` | bool | `true` 时由 Worker 生成随机四级子域名 |
+| `cloudflare_temp_enable_prefix` | bool | 是否启用 Worker 前缀 |
 | `duckmail_api_base` | string | DuckMail API 地址，默认 `https://api.duckmail.sbs` |
 | `duckmail_bearer` | string | DuckMail Bearer Token（[获取方式](#获取-duckmail-bearer-token)） |
 | `proxy` | string | DuckMail API 请求代理（可选） |

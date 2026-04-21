@@ -33,9 +33,37 @@ EMAIL_PROVIDER = str(_conf.get("email_provider", "duckmail"))
 DUCKMAIL_API_BASE = str(_conf.get("duckmail_api_base", "https://api.duckmail.sbs"))
 DUCKMAIL_BEARER = str(_conf.get("duckmail_bearer", ""))
 CLOUDFLARE_TEMP_API_BASE = str(_conf.get("cloudflare_temp_api_base", "https://temp-email-api.bitpowerhub.com"))
+CLOUDFLARE_TEMP_ADMIN_PASSWORD = str(_conf.get("cloudflare_temp_admin_password", ""))
+CLOUDFLARE_TEMP_CUSTOM_AUTH = str(_conf.get("cloudflare_temp_custom_auth", ""))
 CLOUDFLARE_TEMP_DOMAIN = str(_conf.get("cloudflare_temp_domain", "finchaintalk.com"))
 CLOUDFLARE_TEMP_PREFER_RANDOM_SUBDOMAIN = bool(_conf.get("cloudflare_temp_prefer_random_subdomain", True))
+CLOUDFLARE_TEMP_ENABLE_RANDOM_SUBDOMAIN = bool(_conf.get("cloudflare_temp_enable_random_subdomain", True))
+CLOUDFLARE_TEMP_ENABLE_PREFIX = bool(_conf.get("cloudflare_temp_enable_prefix", False))
 PROXY = str(_conf.get("proxy", ""))
+
+DEFAULT_CLOUDFLARE_TEMP_UNIFIED_POOL = [
+    "alpha.yzw.io",
+    "support.yzw.io",
+    "status.yzw.io",
+    "beta.bitpowerhub.com",
+    "assets.tokenflowpay.com",
+    "assets.bitpowerhub.com",
+    "assets.finchaintalk.com",
+    "alpha.tokenflowpay.com",
+    "docs.finchaintalk.com",
+    "alpha.bitflow.cc.cd",
+    "alpha.bitflow.ccwu.cc",
+    "alpha.bitfusionpay.com",
+    "alpha.flowpay.cc.cd",
+    "alpha.leon08.cc.cd",
+    "alpha.relayon.cc.cd",
+    "beta.bitflow.cc.cd",
+    "media.bitflow.ccwu.cc",
+    "files.bitfusionpay.com",
+    "news.flowpay.cc.cd",
+    "help.leon08.cc.cd",
+    "support.relayon.cc.cd",
+]
 
 # ============================================================
 # 适配层：为 DrissionPage_example.py 提供简单接口
@@ -144,6 +172,13 @@ def _generate_password(length=14):
     return "".join(pwd)
 
 
+def _generate_cloudflare_temp_name() -> str:
+    letters = "".join(random.choices(string.ascii_lowercase, k=5))
+    digits = "".join(random.choices(string.digits, k=random.randint(1, 3)))
+    suffix = "".join(random.choices(string.ascii_lowercase, k=random.randint(1, 3)))
+    return letters + digits + suffix
+
+
 def create_temp_email() -> Tuple[str, str, str]:
     if _use_cloudflare_temp_provider():
         return create_cloudflare_temp_email()
@@ -157,6 +192,13 @@ def create_temp_email() -> Tuple[str, str, str]:
 
 def _normalize_domain(domain: str) -> str:
     return str(domain or "").strip().lower().strip(".")
+
+
+CLOUDFLARE_TEMP_DOMAINS = [
+    _normalize_domain(domain)
+    for domain in (_conf.get("cloudflare_temp_domains") or DEFAULT_CLOUDFLARE_TEMP_UNIFIED_POOL)
+    if _normalize_domain(domain)
+]
 
 
 def _as_domain_list(value: Any) -> List[str]:
@@ -175,8 +217,19 @@ def _build_cloudflare_temp_domain_candidates(
     settings: Dict[str, Any],
     preferred_root_domain: str,
     prefer_random_subdomain: bool = True,
+    configured_domains: Optional[List[str]] = None,
 ) -> List[str]:
     preferred_root_domain = _normalize_domain(preferred_root_domain)
+    explicit_domains = [_normalize_domain(domain) for domain in (configured_domains or []) if _normalize_domain(domain)]
+    if explicit_domains:
+        seen = set()
+        ordered = []
+        for domain in explicit_domains:
+            if domain not in seen:
+                seen.add(domain)
+                ordered.append(domain)
+        return ordered
+
     random_domains = _as_domain_list(settings.get("randomSubdomainDomains"))
     domains = _as_domain_list(settings.get("domains")) or _as_domain_list(settings.get("defaultDomains"))
 
@@ -223,18 +276,19 @@ def _choose_cloudflare_temp_domain(settings: Dict[str, Any]) -> str:
         settings=settings,
         preferred_root_domain=CLOUDFLARE_TEMP_DOMAIN,
         prefer_random_subdomain=CLOUDFLARE_TEMP_PREFER_RANDOM_SUBDOMAIN,
+        configured_domains=CLOUDFLARE_TEMP_DOMAINS,
     )
     if not candidates:
         raise Exception("邮箱池没有可用域名")
-
-    root = _normalize_domain(CLOUDFLARE_TEMP_DOMAIN)
-    subdomains = [domain for domain in candidates if _is_subdomain_of_root(domain, root)]
-    return random.choice(subdomains or candidates)
+    return random.choice(candidates)
 
 
 def create_cloudflare_temp_email() -> Tuple[str, str, str]:
     """创建 CloudflareTemp 邮箱，返回 (email, password, jwt)"""
     api_base = CLOUDFLARE_TEMP_API_BASE.rstrip("/")
+    admin_auth = CLOUDFLARE_TEMP_CUSTOM_AUTH or CLOUDFLARE_TEMP_ADMIN_PASSWORD
+    if not admin_auth:
+        raise Exception("cloudflare_temp_admin_password / cloudflare_temp_custom_auth 未设置")
     settings = _fetch_cloudflare_temp_settings()
     domain = _choose_cloudflare_temp_domain(settings)
     session, use_cffi = _create_http_session()
@@ -243,8 +297,14 @@ def create_cloudflare_temp_email() -> Tuple[str, str, str]:
         session,
         use_cffi,
         "post",
-        f"{api_base}/api/new_address",
-        json={"name": "", "domain": domain, "cf_token": ""},
+        f"{api_base}/admin/new_address",
+        json={
+            "name": _generate_cloudflare_temp_name(),
+            "domain": domain,
+            "enablePrefix": CLOUDFLARE_TEMP_ENABLE_PREFIX,
+            "enableRandomSubdomain": CLOUDFLARE_TEMP_ENABLE_RANDOM_SUBDOMAIN,
+        },
+        headers={"x-admin-auth": admin_auth, "x-custom-auth": admin_auth},
         timeout=15,
     )
     if res.status_code != 200:
