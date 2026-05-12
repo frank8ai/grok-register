@@ -7,6 +7,11 @@ import random
 import re
 import string
 import time
+from datetime import datetime, timezone
+from email import policy
+from email.header import decode_header
+from email.parser import BytesParser, Parser
+from email.utils import parsedate_to_datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -37,39 +42,45 @@ CLOUDFLARE_TEMP_ADMIN_PASSWORD = str(_conf.get("cloudflare_temp_admin_password",
 CLOUDFLARE_TEMP_CUSTOM_AUTH = str(_conf.get("cloudflare_temp_custom_auth", ""))
 CLOUDFLARE_TEMP_DOMAIN = str(_conf.get("cloudflare_temp_domain", "finchaintalk.com"))
 CLOUDFLARE_TEMP_PREFER_RANDOM_SUBDOMAIN = bool(_conf.get("cloudflare_temp_prefer_random_subdomain", True))
-CLOUDFLARE_TEMP_ENABLE_RANDOM_SUBDOMAIN = bool(_conf.get("cloudflare_temp_enable_random_subdomain", True))
 CLOUDFLARE_TEMP_ENABLE_PREFIX = bool(_conf.get("cloudflare_temp_enable_prefix", False))
 PROXY = str(_conf.get("proxy", ""))
 
-DEFAULT_CLOUDFLARE_TEMP_UNIFIED_POOL = [
-    "alpha.yzw.io",
-    "support.yzw.io",
-    "status.yzw.io",
-    "beta.bitpowerhub.com",
-    "assets.tokenflowpay.com",
-    "assets.bitpowerhub.com",
-    "assets.finchaintalk.com",
-    "alpha.tokenflowpay.com",
-    "docs.finchaintalk.com",
+DEFAULT_CLOUDFLARE_TEMP_UNIFIED_POOL: List[str] = []
+DEFAULT_CLOUDFLARE_TEMP_RANDOM_SUBDOMAIN_ROOTS = [
     "alpha.bitflow.cc.cd",
     "alpha.bitflow.ccwu.cc",
     "alpha.bitfusionpay.com",
     "alpha.flowpay.cc.cd",
     "alpha.leon08.cc.cd",
     "alpha.relayon.cc.cd",
+    "alpha.yzw.io",
+    "assets.bitflow.cc.cd",
+    "assets.bitflow.ccwu.cc",
+    "assets.flowpay.cc.cd",
+    "assets.leon08.cc.cd",
+    "assets.relayon.cc.cd",
     "beta.bitflow.cc.cd",
-    "media.bitflow.ccwu.cc",
-    "files.bitfusionpay.com",
-    "news.flowpay.cc.cd",
-    "help.leon08.cc.cd",
-    "support.relayon.cc.cd",
+    "beta.bitflow.ccwu.cc",
+    "beta.flowpay.cc.cd",
+    "beta.leon08.cc.cd",
+    "beta.relayon.cc.cd",
+    "billing.bitpowerhub.com",
+    "bitflow.cc.cd",
+    "bitflow.ccwu.cc",
+    "bitfusionpay.com",
+    "bitpowerhub.com",
+    "circle.yizhiwa.com.cn",
+    "club.yizhiwa.com.cn",
+    "console.yizhiwa.com.cn",
 ]
+DEFAULT_CLOUDFLARE_TEMP_EXCLUDED_DOMAINS: List[str] = []
 
 # ============================================================
 # 适配层：为 DrissionPage_example.py 提供简单接口
 # ============================================================
 
 _temp_email_cache: Dict[str, str] = {}
+_verification_request_started_at: Dict[str, float] = {}
 
 
 def get_email_and_token() -> Tuple[Optional[str], Optional[str]]:
@@ -96,6 +107,15 @@ def get_oai_code(dev_token: str, email: str, timeout: int = 30) -> Optional[str]
     if code:
         code = code.replace("-", "")
     return code
+
+
+def mark_verification_request_started(mail_token: str, started_at: Optional[float] = None) -> None:
+    normalized = str(mail_token or "").strip()
+    if not normalized:
+        return
+    _verification_request_started_at[normalized] = (
+        float(started_at) if started_at is not None else time.time()
+    )
 
 
 # ============================================================
@@ -194,17 +214,78 @@ def _normalize_domain(domain: str) -> str:
     return str(domain or "").strip().lower().strip(".")
 
 
+def _dedupe_domains(domains: List[str]) -> List[str]:
+    seen = set()
+    ordered: List[str] = []
+    for domain in domains:
+        normalized = _normalize_domain(domain)
+        if normalized and normalized not in seen:
+            seen.add(normalized)
+            ordered.append(normalized)
+    return ordered
+
+
+def _filter_excluded_domains(domains: List[str], excluded_domains: List[str]) -> List[str]:
+    excluded = {_normalize_domain(domain) for domain in excluded_domains if _normalize_domain(domain)}
+    return [domain for domain in _dedupe_domains(domains) if domain not in excluded]
+
+
+_configured_cloudflare_temp_domains = _conf.get("cloudflare_temp_domains", DEFAULT_CLOUDFLARE_TEMP_UNIFIED_POOL)
+if _configured_cloudflare_temp_domains is None:
+    _configured_cloudflare_temp_domains = DEFAULT_CLOUDFLARE_TEMP_UNIFIED_POOL
+
 CLOUDFLARE_TEMP_DOMAINS = [
     _normalize_domain(domain)
-    for domain in (_conf.get("cloudflare_temp_domains") or DEFAULT_CLOUDFLARE_TEMP_UNIFIED_POOL)
+    for domain in _configured_cloudflare_temp_domains
     if _normalize_domain(domain)
 ]
+CLOUDFLARE_TEMP_EXCLUDED_DOMAINS = _dedupe_domains(
+    [
+        _normalize_domain(domain)
+        for domain in (_conf.get("cloudflare_temp_excluded_domains") or DEFAULT_CLOUDFLARE_TEMP_EXCLUDED_DOMAINS)
+        if _normalize_domain(domain)
+    ]
+)
+CLOUDFLARE_TEMP_DOMAINS = _filter_excluded_domains(CLOUDFLARE_TEMP_DOMAINS, CLOUDFLARE_TEMP_EXCLUDED_DOMAINS)
+CLOUDFLARE_TEMP_RANDOM_SUBDOMAIN_ROOTS = [
+    _normalize_domain(domain)
+    for domain in (_conf.get("cloudflare_temp_random_subdomain_roots") or DEFAULT_CLOUDFLARE_TEMP_RANDOM_SUBDOMAIN_ROOTS)
+    if _normalize_domain(domain)
+]
+CLOUDFLARE_TEMP_RANDOM_SUBDOMAIN_ROOTS = _dedupe_domains(CLOUDFLARE_TEMP_RANDOM_SUBDOMAIN_ROOTS)
+_cloudflare_temp_domain_index = 0
 
 
 def _as_domain_list(value: Any) -> List[str]:
     if not isinstance(value, list):
         return []
     return [_normalize_domain(item) for item in value if _normalize_domain(item)]
+
+
+def _filter_supported_random_subdomain_roots(
+    settings: Dict[str, Any],
+    configured_roots: Optional[List[str]] = None,
+) -> List[str]:
+    roots = _dedupe_domains(configured_roots or CLOUDFLARE_TEMP_RANDOM_SUBDOMAIN_ROOTS)
+    supported_random_domains = _as_domain_list(settings.get("randomSubdomainDomains"))
+    if not supported_random_domains:
+        return roots
+
+    supported_set = set(supported_random_domains)
+    return [domain for domain in roots if domain in supported_set]
+
+
+def _unsupported_random_subdomain_roots(
+    settings: Dict[str, Any],
+    configured_roots: Optional[List[str]] = None,
+) -> List[str]:
+    roots = _dedupe_domains(configured_roots or CLOUDFLARE_TEMP_RANDOM_SUBDOMAIN_ROOTS)
+    supported_random_domains = _as_domain_list(settings.get("randomSubdomainDomains"))
+    if not supported_random_domains:
+        return []
+
+    supported_set = set(supported_random_domains)
+    return [domain for domain in roots if domain not in supported_set]
 
 
 def _is_subdomain_of_root(domain: str, root_domain: str) -> bool:
@@ -272,6 +353,7 @@ def _fetch_cloudflare_temp_settings() -> Dict[str, Any]:
 
 
 def _choose_cloudflare_temp_domain(settings: Dict[str, Any]) -> str:
+    global _cloudflare_temp_domain_index
     candidates = _build_cloudflare_temp_domain_candidates(
         settings=settings,
         preferred_root_domain=CLOUDFLARE_TEMP_DOMAIN,
@@ -280,7 +362,45 @@ def _choose_cloudflare_temp_domain(settings: Dict[str, Any]) -> str:
     )
     if not candidates:
         raise Exception("邮箱池没有可用域名")
-    return random.choice(candidates)
+    domain = candidates[_cloudflare_temp_domain_index % len(candidates)]
+    _cloudflare_temp_domain_index += 1
+    return domain
+
+
+def _build_cloudflare_temp_domain_entries(settings: Optional[Dict[str, Any]] = None) -> List[Tuple[str, bool]]:
+    entries: List[Tuple[str, bool]] = []
+    seen = set()
+    settings = settings or {}
+
+    for domain in CLOUDFLARE_TEMP_DOMAINS:
+        key = (domain, False)
+        if domain and key not in seen:
+            seen.add(key)
+            entries.append(key)
+
+    for domain in _unsupported_random_subdomain_roots(settings):
+        key = (domain, False)
+        if domain and key not in seen:
+            seen.add(key)
+            entries.append(key)
+
+    for domain in _filter_supported_random_subdomain_roots(settings):
+        key = (domain, True)
+        if domain and key not in seen:
+            seen.add(key)
+            entries.append(key)
+
+    return entries
+
+
+def _choose_cloudflare_temp_domain_entry(settings: Dict[str, Any]) -> Tuple[str, bool]:
+    global _cloudflare_temp_domain_index
+    entries = _build_cloudflare_temp_domain_entries(settings)
+    if not entries:
+        raise Exception("邮箱池没有可用域名")
+    domain, enable_random_subdomain = entries[_cloudflare_temp_domain_index % len(entries)]
+    _cloudflare_temp_domain_index += 1
+    return domain, enable_random_subdomain
 
 
 def create_cloudflare_temp_email() -> Tuple[str, str, str]:
@@ -290,7 +410,7 @@ def create_cloudflare_temp_email() -> Tuple[str, str, str]:
     if not admin_auth:
         raise Exception("cloudflare_temp_admin_password / cloudflare_temp_custom_auth 未设置")
     settings = _fetch_cloudflare_temp_settings()
-    domain = _choose_cloudflare_temp_domain(settings)
+    domain, enable_random_subdomain = _choose_cloudflare_temp_domain_entry(settings)
     session, use_cffi = _create_http_session()
 
     res = _do_request(
@@ -302,7 +422,7 @@ def create_cloudflare_temp_email() -> Tuple[str, str, str]:
             "name": _generate_cloudflare_temp_name(),
             "domain": domain,
             "enablePrefix": CLOUDFLARE_TEMP_ENABLE_PREFIX,
-            "enableRandomSubdomain": CLOUDFLARE_TEMP_ENABLE_RANDOM_SUBDOMAIN,
+            "enableRandomSubdomain": enable_random_subdomain,
         },
         headers={"x-admin-auth": admin_auth, "x-custom-auth": admin_auth},
         timeout=15,
@@ -452,36 +572,199 @@ def fetch_email_detail(mail_token: str, msg_id: str) -> Optional[Dict]:
     return None
 
 
+def _parse_mail_timestamp(value: Any) -> float:
+    if value is None:
+        return 0.0
+    if isinstance(value, (int, float)):
+        numeric = float(value)
+        return numeric / 1000.0 if numeric > 10**12 else numeric
+
+    text = str(value or "").strip()
+    if not text:
+        return 0.0
+    if text.isdigit():
+        numeric = float(text)
+        return numeric / 1000.0 if numeric > 10**12 else numeric
+
+    normalized = text.replace("Z", "+00:00")
+    for parser in (
+        lambda raw: datetime.fromisoformat(raw),
+        lambda raw: datetime.strptime(raw, "%Y-%m-%d %H:%M:%S"),
+        lambda raw: datetime.strptime(raw, "%Y/%m/%d %H:%M:%S"),
+        lambda raw: datetime.strptime(raw, "%Y/%m/%d %H:%M"),
+        parsedate_to_datetime,
+    ):
+        try:
+            parsed = parser(normalized)
+            if parsed.tzinfo is None:
+                return parsed.replace(tzinfo=timezone.utc).timestamp()
+            return parsed.timestamp()
+        except Exception:
+            continue
+    return 0.0
+
+
+def _mail_timestamp(item: Dict[str, Any]) -> float:
+    for key in (
+        "createdAt",
+        "created_at",
+        "created",
+        "date",
+        "sentAt",
+        "sent_at",
+        "receivedAt",
+        "received_at",
+        "timestamp",
+    ):
+        parsed = _parse_mail_timestamp(item.get(key))
+        if parsed:
+            return parsed
+    return 0.0
+
+
+def _mail_sort_key(item: Dict[str, Any]) -> Tuple[int, float, int]:
+    timestamp = _mail_timestamp(item)
+    numeric_id = 0
+    try:
+        numeric_id = int(str(item.get("id") or item.get("@id") or "").split("/")[-1])
+    except Exception:
+        numeric_id = 0
+    return (0 if timestamp else 1, timestamp, numeric_id)
+
+
+def _mail_content(item: Dict[str, Any]) -> str:
+    parts: List[str] = []
+    for key in (
+        "subject",
+        "intro",
+        "text",
+        "message",
+        "html",
+        "raw",
+        "body",
+        "content",
+    ):
+        value = item.get(key)
+        if value:
+            if key == "raw":
+                decoded = _decode_raw_email(value)
+                if decoded:
+                    parts.extend(decoded)
+                    continue
+            parts.append(str(value))
+    return "\n".join(parts)
+
+
+def _decode_mime_header(value: str) -> str:
+    decoded_parts: List[str] = []
+    for chunk, encoding in decode_header(str(value or "")):
+        if isinstance(chunk, bytes):
+            decoded_parts.append(chunk.decode(encoding or "utf-8", errors="replace"))
+        else:
+            decoded_parts.append(str(chunk))
+    return "".join(decoded_parts)
+
+
+def _decode_raw_email(raw_value: Any) -> List[str]:
+    raw_text = str(raw_value or "").strip()
+    if not raw_text:
+        return []
+
+    if ":" not in raw_text.partition("\n")[0]:
+        return [raw_text]
+
+    try:
+        message = BytesParser(policy=policy.default).parsebytes(raw_text.encode("utf-8", errors="replace"))
+    except Exception:
+        try:
+            message = Parser(policy=policy.default).parsestr(raw_text)
+        except Exception:
+            return [raw_text]
+
+    parts: List[str] = []
+    subject = _decode_mime_header(message.get("Subject", ""))
+    if subject:
+        parts.append(f"Subject: {subject}")
+
+    if message.is_multipart():
+        for part in message.walk():
+            if part.is_multipart():
+                continue
+            content_type = part.get_content_type()
+            if content_type not in ("text/plain", "text/html"):
+                continue
+            try:
+                payload = part.get_content()
+            except Exception:
+                payload_bytes = part.get_payload(decode=True) or b""
+                charset = part.get_content_charset() or "utf-8"
+                payload = payload_bytes.decode(charset, errors="replace")
+            if payload:
+                parts.append(str(payload))
+    else:
+        try:
+            payload = message.get_content()
+        except Exception:
+            payload_bytes = message.get_payload(decode=True) or b""
+            charset = message.get_content_charset() or "utf-8"
+            payload = payload_bytes.decode(charset, errors="replace")
+        if payload:
+            parts.append(str(payload))
+
+    return [part for part in parts if part]
+
+
+def _mail_debug_summary(item: Dict[str, Any]) -> Dict[str, Any]:
+    summary: Dict[str, Any] = {}
+    for key in ("id", "@id", "subject", "createdAt", "created_at", "date", "sentAt", "receivedAt"):
+        value = item.get(key)
+        if value:
+            summary[key] = value
+
+    content = _mail_content(item)
+    if content:
+        normalized = " ".join(content.split())
+        summary["content_preview"] = normalized[:160]
+
+    return summary
+
+
 def wait_for_verification_code(mail_token: str, timeout: int = 120) -> Optional[str]:
     """轮询临时邮箱等待验证码邮件"""
     start = time.time()
-    seen_ids = set()
+    requested_at = _verification_request_started_at.get(str(mail_token or "").strip(), start)
+    min_mail_timestamp = max(0.0, requested_at - 5.0)
+    last_debug_summaries: List[Dict[str, Any]] = []
 
     while time.time() - start < timeout:
-        messages = fetch_emails(mail_token)
+        messages = sorted(
+            [msg for msg in fetch_emails(mail_token) if isinstance(msg, dict)],
+            key=_mail_sort_key,
+        )
+        last_debug_summaries = [_mail_debug_summary(msg) for msg in messages[:5]]
         for msg in messages:
-            if not isinstance(msg, dict):
+            mail_timestamp = _mail_timestamp(msg)
+            if mail_timestamp and mail_timestamp < min_mail_timestamp:
                 continue
             msg_id = msg.get("id") or msg.get("@id")
-            if not msg_id or msg_id in seen_ids:
+            if not msg_id:
                 continue
-            seen_ids.add(msg_id)
 
             detail = fetch_email_detail(mail_token, str(msg_id))
-            if detail:
-                content = (
-                    detail.get("text")
-                    or detail.get("message")
-                    or detail.get("html")
-                    or detail.get("raw")
-                    or detail.get("subject")
-                    or ""
-                )
+            candidates = [detail, msg] if detail else [msg]
+            for candidate in candidates:
+                if not isinstance(candidate, dict):
+                    continue
+                content = _mail_content(candidate)
                 code = extract_verification_code(content)
                 if code:
                     print(f"[*] 从临时邮箱提取到验证码: {code}")
                     return code
         time.sleep(3)
+    if last_debug_summaries:
+        print(f"[Debug] 验证码轮询超时，最近邮件摘要: {last_debug_summaries}")
+    else:
+        print("[Debug] 验证码轮询超时，邮箱列表为空。")
     return None
 
 

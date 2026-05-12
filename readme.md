@@ -58,29 +58,76 @@ cp config.example.json config.json
     "cloudflare_temp_admin_password": "<your_admin_password>",
     "cloudflare_temp_custom_auth": "<your_custom_auth>",
     "cloudflare_temp_domains": [
-        "alpha.yzw.io",
-        "support.yzw.io",
-        "status.yzw.io",
-        "beta.bitpowerhub.com",
-        "assets.tokenflowpay.com",
-        "assets.bitpowerhub.com",
-        "assets.finchaintalk.com",
-        "alpha.tokenflowpay.com",
-        "docs.finchaintalk.com",
-        "alpha.bitflow.cc.cd",
-        "alpha.bitflow.ccwu.cc",
         "alpha.bitfusionpay.com",
-        "alpha.flowpay.cc.cd",
-        "alpha.leon08.cc.cd",
-        "alpha.relayon.cc.cd",
-        "beta.bitflow.cc.cd",
-        "media.bitflow.ccwu.cc",
+        "assets.bitfusionpay.com",
+        "beta.bitfusionpay.com",
+        "docs.bitfusionpay.com",
         "files.bitfusionpay.com",
-        "news.flowpay.cc.cd",
-        "help.leon08.cc.cd",
-        "support.relayon.cc.cd"
+        "media.bitfusionpay.com",
+        "news.bitfusionpay.com",
+        "status.bitfusionpay.com",
+        "alpha.tokenflowpay.com",
+        "beta.tokenflowpay.com",
+        "files.tokenflowpay.com",
+        "help.tokenflowpay.com",
+        "news.tokenflowpay.com",
+        "status.tokenflowpay.com",
+        "support.tokenflowpay.com",
+        "alpha.finchaintalk.com",
+        "assets.finchaintalk.com",
+        "brand.finchaintalk.com",
+        "care.finchaintalk.com",
+        "contact.finchaintalk.com",
+        "content.finchaintalk.com",
+        "docs.finchaintalk.com",
+        "files.finchaintalk.com",
+        "gallery.finchaintalk.com",
+        "help.finchaintalk.com",
+        "home.finchaintalk.com",
+        "index.finchaintalk.com",
+        "inside.finchaintalk.com",
+        "insight.finchaintalk.com",
+        "manage.finchaintalk.com",
+        "market.finchaintalk.com",
+        "network.finchaintalk.com",
+        "orders.finchaintalk.com",
+        "panel.finchaintalk.com",
+        "platform.finchaintalk.com",
+        "plus.finchaintalk.com",
+        "portal.finchaintalk.com",
+        "project.finchaintalk.com",
+        "report.finchaintalk.com",
+        "showcase.finchaintalk.com",
+        "start.finchaintalk.com",
+        "status.finchaintalk.com",
+        "story.finchaintalk.com",
+        "success.finchaintalk.com",
+        "support.finchaintalk.com",
+        "alpha.yzw.io",
+        "docs.yzw.io",
+        "media.yzw.io",
+        "news.yzw.io",
+        "status.yzw.io",
+        "help.bitfusionpay.com",
+        "media.tokenflowpay.com",
+        "billing.finchaintalk.com",
+        "design.finchaintalk.com",
+        "hub.finchaintalk.com",
+        "news.finchaintalk.com",
+        "studio.finchaintalk.com",
+        "suite.finchaintalk.com",
+        "team.finchaintalk.com",
+        "assets.yzw.io",
+        "beta.yzw.io",
+        "files.yzw.io",
+        "help.yzw.io"
     ],
-    "cloudflare_temp_enable_random_subdomain": true,
+    "cloudflare_temp_random_subdomain_roots": [
+        "alpha.yzw.io",
+        "alpha.bitfusionpay.com",
+        "files.bitfusionpay.com"
+    ],
+    "cloudflare_temp_enable_random_subdomain": false,
     "cloudflare_temp_enable_prefix": false,
     "duckmail_api_base": "https://api.duckmail.sbs",
     "duckmail_bearer": "<your_duckmail_bearer_token>",
@@ -103,8 +150,9 @@ cp config.example.json config.json
 | `cloudflare_temp_api_base` | string | CloudflareTemp Worker API 地址 |
 | `cloudflare_temp_admin_password` | string | CloudflareTemp admin 密码，用于 `/admin/new_address` |
 | `cloudflare_temp_custom_auth` | string | CloudflareTemp custom auth，通常与 admin 密码一致 |
-| `cloudflare_temp_domains` | list | 随机四级子域名的基础域名池 |
-| `cloudflare_temp_enable_random_subdomain` | bool | `true` 时由 Worker 生成随机四级子域名 |
+| `cloudflare_temp_domains` | list | CloudflareTemp Unified Pool 域名池 |
+| `cloudflare_temp_random_subdomain_roots` | list | 已验证可用的随机四级子域名根域 |
+| `cloudflare_temp_enable_random_subdomain` | bool | 暂时保持 `false`，直接使用 21 个基础域名轮替 |
 | `cloudflare_temp_enable_prefix` | bool | 是否启用 Worker 前缀 |
 | `duckmail_api_base` | string | DuckMail API 地址，默认 `https://api.duckmail.sbs` |
 | `duckmail_bearer` | string | DuckMail Bearer Token（[获取方式](#获取-duckmail-bearer-token)） |
@@ -140,6 +188,19 @@ python DrissionPage_example.py --count 0
 ```
 
 无头服务器会自动启用 Xvfb，无需额外配置。
+
+按邮箱池类型运行：
+
+```bash
+# 只跑 295 个固定域名
+python run_full_620.py --pool fixed
+
+# 只跑 25 个随机根域
+python run_full_620.py --pool random
+
+# 固定域名和随机根域都跑
+python run_full_620.py --pool all
+```
 
 ---
 

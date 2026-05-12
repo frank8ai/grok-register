@@ -2,7 +2,6 @@ from DrissionPage import Chromium, ChromiumOptions
 from DrissionPage.errors import PageDisconnectedError
 import argparse
 import shutil
-import tempfile
 import datetime
 import logging
 import time
@@ -11,7 +10,7 @@ import random
 import secrets
 import sys
 
-from email_register import get_email_and_token, get_oai_code
+from email_register import get_email_and_token, get_oai_code, mark_verification_request_started
 
 
 def setup_run_logger() -> logging.Logger:
@@ -84,13 +83,6 @@ if not os.environ.get("DISPLAY") or os.environ.get("USE_XVFB") == "1":
     except Exception as e:
         print(f"[Warn] Xvfb 启动失败: {e}，将尝试直接运行")
 
-co = ChromiumOptions()
-co.auto_port()
-co.set_argument("--no-sandbox")
-co.set_argument("--disable-gpu")
-co.set_argument("--disable-dev-shm-usage")
-co.set_argument("--disable-software-rasterizer")
-
 # 从 config.json 读取代理配置给浏览器
 _browser_proxy = ""
 try:
@@ -103,30 +95,29 @@ try:
 except Exception:
     pass
 if _browser_proxy:
-    co.set_proxy(_browser_proxy)
     print(f"[*] 浏览器代理: {_browser_proxy}")
+
+_last_verification_request_started_at = None
 
 # Linux 服务器自动检测 chromium 路径
 import platform
 import shutil
 import glob as _glob_mod
+_browser_path = ""
 if platform.system() == "Linux":
     # 优先用 playwright 装的 chromium（无 AppArmor 限制）
     _pw_chromes = _glob_mod.glob(os.path.expanduser("~/.cache/ms-playwright/chromium-*/chrome-linux*/chrome"))
     if _pw_chromes:
-        co.set_browser_path(_pw_chromes[0])
+        _browser_path = _pw_chromes[0]
     else:
         for _candidate in ["/usr/bin/chromium-browser", "/usr/bin/chromium", "/usr/bin/google-chrome"]:
             if os.path.isfile(_candidate):
-                co.set_browser_path(_candidate)
+                _browser_path = _candidate
                 break
     # user_data_path 在 start_browser() 每轮动态设置，此处不固定
 
-co.set_timeouts(base=1)
-
 # 加载修复 MouseEvent.screenX / screenY 的扩展。
 EXTENSION_PATH = os.path.abspath(os.path.join(os.path.dirname(__file__), "turnstilePatch"))
-co.add_extension(EXTENSION_PATH)
 
 _chrome_temp_dir: str = ""
 browser = None
@@ -141,15 +132,40 @@ _credential_dir = os.path.join(os.path.dirname(__file__), "credentials")
 DEFAULT_CREDENTIAL_FILE = os.path.join(_credential_dir, f"credentials_{_sso_ts}.txt")
 
 
+def create_browser_options():
+    # 每次启动都创建新的配置对象，避免复用已经断开的调试连接。
+    options = ChromiumOptions()
+    options.auto_port()
+    options.set_argument("--no-sandbox")
+    options.set_argument("--disable-gpu")
+    options.set_argument("--disable-dev-shm-usage")
+    options.set_argument("--disable-software-rasterizer")
+    if _browser_proxy:
+        options.set_proxy(_browser_proxy)
+    if _browser_path:
+        options.set_browser_path(_browser_path)
+    options.set_timeouts(base=1)
+    options.add_extension(EXTENSION_PATH)
+    return options
+
+
 def start_browser():
-    # 每轮从全新浏览器开始，使用独立临时 profile 目录避免 Cookie/Session 复用。
+    # 每轮从全新浏览器开始，auto_port 会同时分配独立调试端口和临时 profile。
     global browser, page, _chrome_temp_dir
-    _chrome_temp_dir = tempfile.mkdtemp(prefix="chrome_run_")
-    co.set_user_data_path(_chrome_temp_dir)
-    browser = Chromium(co)
-    tabs = browser.get_tabs()
-    page = tabs[-1] if tabs else browser.new_tab()
-    return browser, page
+    last_error = None
+    for _ in range(2):
+        try:
+            options = create_browser_options()
+            browser = Chromium(options)
+            _chrome_temp_dir = browser.user_data_path or ""
+            tabs = browser.get_tabs()
+            page = tabs[-1] if tabs else browser.new_tab()
+            return browser, page
+        except Exception as error:
+            last_error = error
+            stop_browser()
+            time.sleep(0.5)
+    raise last_error
 
 
 def stop_browser():
@@ -168,19 +184,10 @@ def stop_browser():
 
 
 def restart_browser():
-    # 清除 cookie/storage 代替完整重启，节省 Chrome 冷启动时间。
-    global browser, page
-    if browser is None:
-        start_browser()
-        return
-    try:
-        tabs = browser.get_tabs()
-        page = tabs[-1] if tabs else browser.new_tab()
-        page.run_js("window.localStorage.clear(); window.sessionStorage.clear();")
-        page.clear_cache(session_storage=True, cookies=True)
-    except Exception:
-        stop_browser()
-        start_browser()
+    # 注册完成后页面可能还在跳转；不要再操作旧页面，直接换全新浏览器。
+    stop_browser()
+    time.sleep(0.5)
+    start_browser()
 
 
 def refresh_active_page():
@@ -271,6 +278,7 @@ return true;
 
 def fill_email_and_submit(timeout=15):
     # 复用 `email_register.py` 里的邮箱获取逻辑，保留邮箱与 token 供后续验证码步骤继续使用。
+    global _last_verification_request_started_at
     email, dev_token = get_email_and_token()
     if not email or not dev_token:
         raise Exception("获取邮箱失败")
@@ -389,6 +397,8 @@ return true;
             )
 
             if clicked:
+                _last_verification_request_started_at = time.time()
+                mark_verification_request_started(dev_token, _last_verification_request_started_at)
                 print(f"[*] 已填写邮箱并点击注册: {email}")
                 return email, dev_token
 
